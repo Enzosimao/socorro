@@ -172,6 +172,65 @@ public class SocorroTest {
             assertEquals("system",context.getSharedPreferences("socorro",0).getString("themeMode",""));
         }finally{main(activity::finish);}
     }
+    @Test public void liveEndpointStatusForManualDiagnosis() throws Exception {
+        org.junit.Assume.assumeTrue("yes".equals(InstrumentationRegistry.getArguments().getString("liveApi")));
+        JSONObject request=new JSONObject().put("usuario","Teste de integracao Socorro Android").put("tipo_registro",1).put("device_id","socorro-android-teste-"+java.util.UUID.randomUUID()).put("modelo","Emulador de teste de integracao");
+        Method http=ApiClient.class.getDeclaredMethod("http",String.class,String.class,String.class);http.setAccessible(true);
+        try{JSONObject response=(JSONObject)http.invoke(null,"POST",ApiClient.ENDPOINT,request.toString());ApiClient.validateConfirmation(response,request);android.util.Log.i("SocorroApiLive","CONFIRMADO: registro "+response.optString("id")+"; nome: "+response.optString("usuario"));}
+        catch(InvocationTargetException error){Throwable cause=error.getCause();android.util.Log.i("SocorroApiLive","SEM_CONFIRMACAO: "+ApiClient.errorMessage(cause instanceof Exception?(Exception)cause:error));}
+        catch(Exception error){android.util.Log.i("SocorroApiLive","SEM_CONFIRMACAO: "+ApiClient.errorMessage(error));}
+    }
+    @Test public void apiRejectsHtmlErrorsAndIncompleteAcknowledgements() throws Exception {
+        JSONObject request=new JSONObject("{\"usuario\":\"Enzo teste\",\"tipo_registro\":1}");
+        try{ApiClient.parseResponse(405,"<html>405 Not Allowed</html>");fail("HTTP 405 não pode confirmar envio");}catch(IOException error){assertTrue(error.getMessage().contains("405"));}
+        try{ApiClient.parseResponse(200,"<html>captcha</html>");fail("Captcha não é resposta da API");}catch(IOException error){assertTrue(error.getMessage().contains("segurança"));}
+        try{ApiClient.validateConfirmation(new JSONObject("{\"status\":\"sucesso\"}"),request);fail("ID ausente não confirma envio");}catch(IOException expected){}
+        try{ApiClient.validateConfirmation(new JSONObject("{\"status\":\"sucesso\",\"id\":12,\"usuario\":\"Outro nome\"}"),request);fail("Nome diferente não confirma envio");}catch(IOException expected){}
+        ApiClient.validateConfirmation(ApiClient.parseResponse(200,"{\"status\":\"sucesso\",\"id\":12,\"usuario\":\"Enzo teste\",\"tipo_registro\":1}"),request);
+        assertTrue(ApiClient.errorMessage(new javax.net.ssl.SSLHandshakeException("handshake")).contains("HTTPS"));
+    }
+    @Test public void payloadKeepsSavedNameAndOnlyAvailableSensorData() throws Exception {
+        context.getSharedPreferences("socorro",0).edit().putString("name","  Enzo integração  ").commit();
+        SensorReadings readings=new SensorReadings((android.hardware.SensorManager)context.getSystemService(Context.SENSOR_SERVICE));
+        JSONObject noGps=TelemetryPayload.create(context,null,readings,1,0);assertEquals("Enzo integração",noGps.getString("usuario"));assertFalse(noGps.has("latitude"));assertFalse(noGps.has("pressao"));assertFalse(noGps.has("temperatura"));assertTrue(noGps.has("bateria"));
+        Location location=location(-23.55,-46.63);location.setSpeed(5);readings.acceptPressure(1013.25f,1000000000L);readings.temperature=24;
+        JSONObject withGps=TelemetryPayload.create(context,location,readings,2,3.5);assertEquals(noGps.getString("device_id"),withGps.getString("device_id"));assertEquals(18,withGps.getDouble("velocidade"),0.001);assertEquals(1013.25,withGps.getDouble("pressao"),0.01);assertEquals(24,withGps.getDouble("temperatura"),0.001);assertEquals(3.5,withGps.getDouble("nivel_queda"),0.001);
+    }
+    @Test public void manualSendUsesNameDraftWithoutStartingMonitoring() throws Exception {
+        waitFor(()->!SyncManager.busy,5000);try(Outbox db=new Outbox(context)){db.getWritableDatabase().delete("pending",null,null);}
+        final java.util.concurrent.atomic.AtomicReference<JSONObject> captured=new java.util.concurrent.atomic.AtomicReference<>();
+        ApiClient.transport=(method,url,body)->{if(!method.equals("POST"))return new JSONObject();JSONObject request=new JSONObject(body);captured.set(request);return new JSONObject().put("status","sucesso").put("id",701).put("usuario",request.getString("usuario")).put("tipo_registro",1);};
+        MainActivity activity=launch();
+        try{
+            main(()->{activity.selectTab(3);((EditText)activity.findViewById(android.R.id.content).findViewWithTag("profileName")).setText("Enzo envio manual");activity.findViewById(android.R.id.content).findViewWithTag("sendNow").performClick();});
+            waitFor(()->captured.get()!=null&&context.getSharedPreferences("socorro",0).getString("lastSyncUser","").equals("Enzo envio manual")&&!SyncManager.busy,8000);
+            assertFalse(MonitorService.running);assertEquals("Enzo envio manual",captured.get().getString("usuario"));assertEquals(1,captured.get().getInt("tipo_registro"));
+            try(Outbox db=new Outbox(context)){assertEquals(0,db.pendingCount());Outbox.Event event=db.events(false).get(0);assertEquals("701",event.remoteId);assertEquals("Enzo envio manual",new JSONObject(event.payload).getString("usuario"));}
+            main(()->activity.selectTab(0));screenshot("inicio-envio-confirmado");
+            main(()->activity.selectTab(3));View status=activity.findViewById(android.R.id.content).findViewWithTag("apiState");main(()->status.requestRectangleOnScreen(new android.graphics.Rect(0,0,status.getWidth(),status.getHeight()),true));screenshot("api-confirmada");
+        }finally{main(activity::finish);}
+    }
+    @Test public void rejectedPostPreservesNameAndPendingDataUntilRetry() throws Exception {
+        waitFor(()->!SyncManager.busy,5000);try(Outbox db=new Outbox(context)){db.getWritableDatabase().delete("pending",null,null);}
+        ApiClient.transport=(method,url,body)->ApiClient.parseResponse(405,"<html>405 Not Allowed</html>");
+        MainActivity activity=launch();
+        try{
+            main(()->{activity.selectTab(3);((EditText)activity.findViewById(android.R.id.content).findViewWithTag("profileName")).setText("Nome preservado");activity.findViewById(android.R.id.content).findViewWithTag("sendNow").performClick();});
+            waitFor(()->context.getSharedPreferences("socorro",0).getString("syncError","").contains("405")&&!SyncManager.busy,8000);
+            try(Outbox db=new Outbox(context)){assertEquals(1,db.pendingCount());assertEquals("Nome preservado",new JSONObject(db.first().body).getString("usuario"));assertEquals("Aguardando reenvio",db.events(false).get(0).state);}
+            main(()->activity.selectTab(0));screenshot("api-envio-pendente");
+            ApiClient.transport=(method,url,body)->new JSONObject("{\"status\":\"sucesso\",\"id\":702}");SyncManager.flush(context,null);
+            waitFor(()->{try(Outbox db=new Outbox(context)){return db.pendingCount()==0&&!SyncManager.busy;}},8000);assertEquals("",context.getSharedPreferences("socorro",0).getString("syncError","erro"));
+        }finally{main(activity::finish);}
+    }
+    @Test public void upgradeV2PreservesPayloadAfterAcknowledgement() throws Exception {
+        String file="payload-migration-test.db";context.deleteDatabase(file);
+        try(SQLiteDatabase old=context.openOrCreateDatabase(file,0,null)){
+            old.execSQL("CREATE TABLE events(id INTEGER PRIMARY KEY,at INTEGER,trip INTEGER,title TEXT,detail TEXT,kind INTEGER,state TEXT,remote_id TEXT)");old.execSQL("CREATE TABLE pending(id INTEGER PRIMARY KEY,type INTEGER,body TEXT,event_id INTEGER)");
+            old.execSQL("INSERT INTO events VALUES(1,0,0,'Registro','',1,'Pendente',NULL)");old.execSQL("INSERT INTO pending VALUES(1,1,?,1)",new Object[]{"{\"usuario\":\"Nome da versão anterior\",\"tipo_registro\":1}"});old.setVersion(2);
+        }
+        try(Outbox db=new Outbox(context,file)){Outbox.Entry entry=db.first();db.confirmed(entry,"703");assertEquals(0,db.pendingCount());assertEquals("Nome da versão anterior",new JSONObject(db.events(false).get(0).payload).getString("usuario"));}finally{context.deleteDatabase(file);}
+    }
     @Test public void proximityRequiresRealValidReadingAndActiveListener() {
         SensorReadings readings=new SensorReadings((android.hardware.SensorManager)context.getSystemService(Context.SENSOR_SERVICE));
         readings.available[2]=true;readings.listening[2]=true;assertFalse(readings.hasProximityReading());

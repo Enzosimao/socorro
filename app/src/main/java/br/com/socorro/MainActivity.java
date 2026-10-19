@@ -34,7 +34,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private TextView alertClock, alertTitle, alertDetail;
     private ProgressBar alertProgress;
     private final Map<String,TextView> labels = new HashMap<>();
-    private Button monitorButton, mapButton, whatsAppButton;
+    private Button monitorButton, mapButton, whatsAppButton, apiSendButton;
     private TraceView trace;
     private SignalView signal;
     private EditText nameInput;
@@ -68,7 +68,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     }
     private void build() {
         rendering = true; palette(); labels.clear(); nameInput = null; smsSwitch = null;
-        trace = null; signal = null; monitorButton = null; mapButton = null; historyRows = null;
+        trace = null; signal = null; monitorButton = null; mapButton = null; historyRows = null; apiSendButton = null;
         getWindow().setBackgroundDrawable(new ColorDrawable(bg));
         root = column(); root.setBackgroundColor(bg); root.setTag("root");
         root.setOnApplyWindowInsetsListener((v, insets) -> {
@@ -116,15 +116,50 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         if (backSupport != null) backSupport.update(tab != 0);
         update();
     }
-    void selectTab(int target) { tab=target; build(); }
+    void selectTab(int target) { if(nameInput!=null&&!nameInput.getText().toString().trim().isEmpty())saveNameDraft();tab=target; build(); }
     private void heading(String eyebrow,String title,String subtitle) {
         TextView eye=text(eyebrow,10,muted,true);eye.setLetterSpacing(.12f);content.addView(eye);
-        TextView h=text(title,30,ink,true);h.setPadding(0,dp(8),0,dp(7));h.setLineSpacing(0,.98f);content.addView(h);
+        TextView h=text(title,26,ink,true);h.setPadding(0,dp(8),0,dp(7));h.setLineSpacing(0,.98f);content.addView(h);
         if(subtitle!=null){TextView sub=text(subtitle,14,muted,false);sub.setLineSpacing(dp(3),1);content.addView(sub);}
-        space(content,20);
+        space(content,16);
+    }
+    private boolean saveNameDraft(){
+        if(nameInput==null)return !prefs.getString("name","").trim().isEmpty();
+        String name=nameInput.getText().toString().trim();if(name.isEmpty()){nameInput.setError("Informe seu nome");return false;}
+        prefs.edit().putString("name",name).apply();return true;
+    }
+    private LinearLayout apiCard(){
+        LinearLayout box=card();sectionTitle(box,"arrow","Dados para a API",null);space(box,10);
+        box.addView(label("apiUser","",16,ink,true));space(box,6);box.addView(label("apiData","",12,muted,false));space(box,10);
+        box.addView(label("apiState","",13,ink,true));space(box,6);box.addView(label("apiError","",12,danger,false));
+        apiSendButton=outlineButton("Enviar agora");apiSendButton.setTag("sendNow");apiSendButton.setOnClickListener(v->sendNow());space(box,10);box.addView(apiSendButton);
+        Button history=smallButton("Ver histórico de envios");history.setOnClickListener(v->{historyFilter=1;selectTab(2);});box.addView(history);
+        return box;
+    }
+    private void updateApiCard(){
+        String name=prefs.getString("name","").trim();set("apiUser",name.isEmpty()?"Informe seu nome em Ajustes":name);
+        Location location=currentLocation();SensorReadings source=MonitorService.running&&MonitorService.currentReadings!=null?MonitorService.currentReadings:readings;
+        set("apiData","Nome, identificação do aparelho e bateria"+(MonitorService.fresh(location)?" · localização disponível":" · aguardando localização")+(Float.isFinite(source.pressure)?" · pressão disponível":"")+(Float.isFinite(source.temperature)?" · temperatura disponível":""));
+        int pending=db.pendingCount();long synced=prefs.getLong("lastSync",0);String id=prefs.getString("lastSyncId","");
+        String previous=synced>0?"Última confirmação: "+(id.isEmpty()?"registro": "#"+id)+" · "+prefs.getString("lastSyncUser","nome não registrado")+" · "+date(synced,"dd/MM HH:mm"):"Ainda sem confirmação de recebimento";
+        set("apiState",SyncManager.busy?"Enviando dados…":pending>0?pending+" registro(s) aguardando envio\n"+previous:previous);
+        String error=prefs.getString("syncError","");set("apiError",error.isEmpty()?"Salvar o nome no celular não confirma o envio ao servidor.":error);
+        TextView errorView=labels.get("apiError");if(errorView!=null)errorView.setTextColor(error.isEmpty()?muted:danger);
+        if(apiSendButton!=null){apiSendButton.setEnabled(!SyncManager.busy);apiSendButton.setText(SyncManager.busy?"Enviando…":pending>0?"Enviar e tentar pendências":"Enviar agora");}
+    }
+    private void sendNow(){
+        if(nameInput!=null&&!saveNameDraft())return;
+        if(prefs.getString("name","").trim().isEmpty()){selectTab(3);nameInput.requestFocus();nameInput.setError("Informe seu nome para enviar");return;}
+        try{
+            SensorReadings source=MonitorService.running&&MonitorService.currentReadings!=null?MonitorService.currentReadings:readings;
+            JSONObject body=TelemetryPayload.create(this,currentLocation(),source,1,0);
+            db.add(1,body.toString(),MonitorService.running?MonitorService.tripId:0,"Envio manual de dados","Nome: "+body.optString("usuario")+(body.has("latitude")?" · localização incluída":" · sem localização recente"));
+            SyncManager.flush(this,null);lastSlow=0;updateApiCard();
+        }catch(Exception error){prefs.edit().putString("syncError",ApiClient.errorMessage(error)).apply();updateApiCard();}
     }
     private void homeScreen() {
-        heading("SEGURANÇA EM MOVIMENTO", MonitorService.running ? "Trajeto em\nandamento." : "Seu próximo\ntrajeto.",null);
+        String savedName=prefs.getString("name","").trim();String firstName=savedName.isEmpty()?"":savedName.split("\\s+")[0];
+        heading("VISÃO GERAL",savedName.isEmpty()?"Sua segurança":"Olá, "+firstName,MonitorService.running?"Acompanhando seu trajeto.":"Tudo pronto para o seu próximo trajeto.");
         LinearLayout hero=column();hero.setPadding(dp(18),dp(18),dp(18),dp(18));hero.setBackground(round(color(dark?"#181818":"#244E40"),18));
         LinearLayout heroRow=row();heroRow.addView(new Glyph(this,"shield",color(dark?"#EEEEEE":"#C7DEB8")),new LinearLayout.LayoutParams(dp(29),dp(31)));
         LinearLayout heroWords=column();LinearLayout.LayoutParams words=new LinearLayout.LayoutParams(0,-2,1);words.leftMargin=dp(12);heroRow.addView(heroWords,words);
@@ -134,7 +169,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         monitorButton.setOnClickListener(v->{if(MonitorService.running)stopMonitoring();else start("START");});hero.addView(monitorButton);addCard(hero);
         LinearLayout metrics=row();String[] keys={"speed","duration","battery"}, captions={"km/h","tempo de trajeto","bateria"};
         for(int i=0;i<3;i++) {LinearLayout metric=column();metric.setPadding(dp(i==0?0:12),dp(8),dp(8),dp(8));metric.addView(label(keys[i],"—",25,ink,true));metric.addView(text(captions[i],10,muted,false));metrics.addView(metric,new LinearLayout.LayoutParams(0,-2,1));}
-        content.addView(metrics);space(content,16);
+        content.addView(metrics);space(content,16);addCard(apiCard());
         LinearLayout route=card();sectionTitle(route,"pin","Localização","routeState");space(route,12);
         trace=new TraceView(this);route.addView(trace,new LinearLayout.LayoutParams(-1,dp(140)));space(route,10);
         route.addView(label("coordinates","Aguardando localização",13,ink,true));route.addView(label("gpsHint","Ative o GPS para acompanhar o trajeto.",11,muted,false));
@@ -148,7 +183,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         LinearLayout weatherFooter=row();TextView source=text("Open-Meteo",10,muted,false);source.setOnClickListener(v->openUrl("https://open-meteo.com/"));source.setPadding(0,dp(12),dp(8),dp(12));weatherFooter.addView(source,new LinearLayout.LayoutParams(0,-2,1));
         Button refreshWeather=smallButton("Atualizar");refreshWeather.setTag("weatherRefresh");refreshWeather.setOnClickListener(v->{Location l=currentLocation();if(!MonitorService.fresh(l))start("PREVIEW");else WeatherClient.refresh(this,l,true);});weatherFooter.addView(refreshWeather);weather.addView(weatherFooter);addCard(weather);
         LinearLayout check=card();sectionTitle(check,"history","Check-in de segurança",null);space(check,8);check.addView(label("checkIn","A cada 30 minutos",15,ink,true));check.addView(label("checkHint","Confirme que está bem durante o trajeto.",12,muted,false));space(check,10);Button okay=outlineButton("Estou bem");okay.setTag("checkIn");okay.setOnClickListener(v->{if(MonitorService.running)serviceAction("CANCEL");else selectTab(3);});check.addView(okay);addCard(check);
-        LinearLayout sync=card();sectionTitle(sync,"person","Contatos e envios",null);space(sync,8);sync.addView(label("contactStatus","Nenhum contato cadastrado",13,ink,true));sync.addView(label("syncStatus","Nenhum registro enviado ainda.",12,muted,false));sync.setOnClickListener(v->selectTab(3));addCard(sync);
+        LinearLayout contacts=card();sectionTitle(contacts,"person","Contatos de emergência",null);space(contacts,8);contacts.addView(label("contactStatus","",13,ink,true));Button editContacts=outlineButton("Configurar contatos e envio");editContacts.setOnClickListener(v->selectTab(3));space(contacts,10);contacts.addView(editContacts);addCard(contacts);
         TextView note=text("Você terá 30 segundos para cancelar o alerta.",11,muted,false);note.setGravity(Gravity.CENTER);note.setPadding(0,dp(8),0,0);content.addView(note);
     }
     private void sensorsScreen() {
@@ -201,7 +236,9 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     }
     private void showEvent(Outbox.Event event) {
         String detail=date(event.at,"dd/MM/yyyy 'às' HH:mm:ss")+"\n\n"+event.detail+"\n\nEnvio: "+event.state;
-        if(event.remoteId!=null)detail+="\nRegistro no servidor: "+event.remoteId;
+        if(event.remoteId!=null&&!event.remoteId.isEmpty())detail+="\nRegistro no servidor: "+event.remoteId;
+        if(event.payload!=null){try{JSONObject sent=new JSONObject(event.payload);detail+="\n\nNome enviado: "+sent.optString("usuario")+"\nAparelho: "+sent.optString("modelo")+(sent.has("bateria")?"\nBateria: "+Math.round(sent.optDouble("bateria"))+"%":"")+(sent.has("latitude")?"\nLocalização enviada: "+sent.optDouble("latitude")+", "+sent.optDouble("longitude"):"\nLocalização indisponível no momento do registro")+(sent.has("pressao")?"\nPressão: "+sent.optDouble("pressao")+" hPa":"");}catch(JSONException ignored){}}
+
         String sms=db.smsSummary(event.id);if(!sms.isEmpty())detail+="\n\nContatos por SMS\n"+sms+"\n\nAceito pela operadora não confirma leitura ou entrega ao destinatário.";
         AlertDialog.Builder b=dialogBuilder().setTitle(event.title).setMessage(detail).setPositiveButton("Fechar",null);
         if(event.trip>0)b.setNeutralButton("Ver trajeto",(d,w)->showMap(db.points(event.trip),"Trajeto do evento","Registro de "+date(event.at,"dd/MM · HH:mm")));
@@ -209,9 +246,9 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     }
     private void settingsScreen() {
         heading("PREFERÊNCIAS DO TRAJETO","Ajustes","Socorro "+BuildConfig.VERSION_NAME+" · versão "+BuildConfig.VERSION_CODE);
-        LinearLayout profile=card();profile.addView(text("Seu nome",16,ink,true));profile.addView(text("Identificação enviada ao servidor e aos contatos.",11,muted,false));space(profile,8);
+        LinearLayout profile=card();profile.addView(text("Seu nome",16,ink,true));profile.addView(text("Este nome acompanha seus registros na API e os alertas aos contatos.",12,muted,false));space(profile,8);
         nameInput=input("Nome",prefs.getString("name",""),android.text.InputType.TYPE_CLASS_TEXT|android.text.InputType.TYPE_TEXT_FLAG_CAP_WORDS);nameInput.setFilters(new InputFilter[]{new InputFilter.LengthFilter(150)});nameInput.setTag("profileName");profile.addView(nameInput);
-        Button save=outlineButton("Salvar nome");save.setTag("saveName");save.setOnClickListener(v->{String name=nameInput.getText().toString().trim();if(name.isEmpty()){nameInput.setError("Informe seu nome");return;}prefs.edit().putString("name",name).apply();nameInput.clearFocus();hideKeyboard();toast("Nome salvo");});space(profile,8);profile.addView(save);addCard(profile);
+        Button save=outlineButton("Salvar nome no aparelho");save.setTag("saveName");save.setOnClickListener(v->{if(saveNameDraft()){nameInput.clearFocus();hideKeyboard();toast("Nome salvo no aparelho.");updateApiCard();}});space(profile,8);profile.addView(save);addCard(profile);addCard(apiCard());
         LinearLayout contacts=card();sectionTitle(contacts,"person","Contatos de emergência",null);space(contacts,8);
         JSONArray people=Contacts.read(prefs);
         if(people.length()==0)contacts.addView(text("Cadastre quem deve receber o alerta e sua localização.",12,muted,false));
@@ -327,8 +364,9 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         }
         if(now-lastSlow>=2000){lastSlow=now;
             Intent state=registerReceiver(null,new IntentFilter(Intent.ACTION_BATTERY_CHANGED));if(state!=null&&state.getIntExtra(BatteryManager.EXTRA_SCALE,0)>0)battery=100*state.getIntExtra(BatteryManager.EXTRA_LEVEL,0)/state.getIntExtra(BatteryManager.EXTRA_SCALE,100);
-            if(tab==0){int pending=db.pendingCount();long synced=prefs.getLong("lastSync",0);set("syncStatus",pending>0?pending+" registros aguardando envio"+(MonitorService.running?"":" · inicie para reenviar"):synced>0?"Último envio confirmado às "+date(synced,"HH:mm"):"Nenhum registro enviado ainda.");JSONArray p=MonitorService.running?db.points(MonitorService.tripId):new JSONArray();Location l=currentLocation();if(p.length()==0&&MonitorService.fresh(l))p.put(new JSONArray(Arrays.asList(l.getLatitude(),l.getLongitude())));if(trace!=null)trace.update(p,dark);}
+            if(tab==0){JSONArray p=MonitorService.running?db.points(MonitorService.tripId):new JSONArray();Location l=currentLocation();if(p.length()==0&&MonitorService.fresh(l))p.put(new JSONArray(Arrays.asList(l.getLatitude(),l.getLongitude())));if(trace!=null)trace.update(p,dark);}
             if(tab==2&&historyRevision!=Outbox.revision.get())refreshHistory();
+            if(tab==0||tab==3)updateApiCard();
         }
         if(tab==3){set("themeDiagnostic",themeDescription());set("themeThreshold","Limite do automático: "+themeThreshold()+" lux");}
         updateLightTheme(now);
@@ -398,6 +436,7 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
     private boolean hasLocation(){return checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION)==PackageManager.PERMISSION_GRANTED||checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION)==PackageManager.PERMISSION_GRANTED;}
     private boolean notificationsAllowed(){return getSystemService(NotificationManager.class).areNotificationsEnabled();}
     private void start(String action){
+        if(!"PREVIEW".equals(action)&&nameInput!=null&&!saveNameDraft())return;
         if(!"PREVIEW".equals(action)&&prefs.getString("name","").isEmpty()){selectTab(3);nameInput.requestFocus();toast("Salve seu nome para iniciar");return;}
         ArrayList<String> permissions=new ArrayList<>();if(!hasLocation()){permissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);permissions.add(Manifest.permission.ACCESS_FINE_LOCATION);}
         if(!"PREVIEW".equals(action)&&Build.VERSION.SDK_INT>=33&&!prefs.getBoolean("notificationAsked",false)&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED){permissions.add(Manifest.permission.POST_NOTIFICATIONS);prefs.edit().putBoolean("notificationAsked",true).apply();}

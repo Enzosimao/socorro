@@ -71,7 +71,8 @@ public class MonitorService extends Service implements SensorEventListener, Loca
         setStatus(readings.listening[0] ? "Monitoramento ativo, inclusive com tela apagada" : "Acelerômetro sem leitura ativa. SOS manual disponível.");
         handler.post(clock);
         handler.postDelayed(telemetry, 60000);
-        flush();
+        if (!firstLocationSent) send(1, 0);
+        else flush();
     }
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (!running || intent == null) return START_NOT_STICKY;
@@ -160,25 +161,7 @@ public class MonitorService extends Service implements SensorEventListener, Loca
         }
     }
     private JSONObject payload(int type) throws Exception {
-        JSONObject body = new JSONObject(); String device = prefs.getString("device", "");
-        if (device.isEmpty()) { device = UUID.randomUUID().toString(); prefs.edit().putString("device", device).apply(); }
-        String model = Build.MANUFACTURER + " " + Build.MODEL;
-        body.put("usuario", prefs.getString("name", "")); body.put("tipo_registro", type);
-        body.put("device_id", device); body.put("modelo", model.substring(0, Math.min(100, model.length())));
-        Intent battery = registerReceiver(null, new IntentFilter(Intent.ACTION_BATTERY_CHANGED));
-        if (battery != null && battery.getIntExtra(BatteryManager.EXTRA_SCALE, 0) > 0)
-            body.put("bateria", Math.max(0, Math.min(100, 100.0 * battery.getIntExtra(BatteryManager.EXTRA_LEVEL, 0) / battery.getIntExtra(BatteryManager.EXTRA_SCALE, 100))));
-        Location location = latestLocation;
-        if (fresh(location)) {
-            body.put("latitude", location.getLatitude()); body.put("longitude", location.getLongitude());
-            if (location.hasSpeed() && location.getSpeed() >= 0) body.put("velocidade", location.getSpeed() * 3.6);
-        }
-        if (readings != null) {
-            if (Float.isFinite(readings.pressure)) body.put("pressao", readings.pressure);
-            if (Float.isFinite(readings.temperature)) body.put("temperatura", readings.temperature);
-        }
-        if (type == 2 && impact > 0) body.put("nivel_queda", impact);
-        return body;
+        return TelemetryPayload.create(this, latestLocation, readings, type, impact);
     }
     private void send(int type, int reason) {
         JSONObject body;
@@ -204,31 +187,11 @@ public class MonitorService extends Service implements SensorEventListener, Loca
     private void flush() {
         if (sending || destroyed) return;
         sending = true;
-        network.execute(() -> {
-            Outbox.Entry entry = null; boolean confirmed = false; String message = null;
-            try {
-                entry = outbox.first();
-                if (entry != null) {
-                    JSONObject json = ApiClient.post(entry.body);
-                    if (!"sucesso".equals(json.optString("status"))) throw new java.io.IOException("Servidor não confirmou");
-                    outbox.confirmed(entry, json.optString("id")); confirmed = true;
-                    prefs.edit().putLong("lastSync", System.currentTimeMillis()).putString("syncError", "").apply();
-                    message = "Registro confirmado pelo servidor";
-                }
-            } catch (Exception e) {
-                if (entry != null) outbox.failed(entry);
-                message = "Sem confirmação. Reenvio em 1 minuto.";
-                prefs.edit().putString("syncError", message).apply();
-            }
-            final boolean next = confirmed, found = entry != null; final String result = message;
-            handler.post(() -> {
-                sending = false;
-                if (destroyed) return;
-                if (result != null) prefs.edit().putString("syncStatus", result).apply();
-                handler.removeCallbacks(retry);
-                if (found || !next && result != null) handler.postDelayed(retry, next ? 0 : 60000);
-                else if (outbox.pendingCount() > 0) handler.post(retry);
-            });
+        SyncManager.flush(this, () -> {
+            sending = false;
+            if (destroyed) return;
+            handler.removeCallbacks(retry);
+            if (outbox.pendingCount() > 0) handler.postDelayed(retry, 60000);
         });
     }
     private final Runnable retry = () -> flush();

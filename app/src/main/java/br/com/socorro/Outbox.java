@@ -13,13 +13,13 @@ final class Outbox extends SQLiteOpenHelper {
     static final AtomicLong revision = new AtomicLong();
     private final Context context;
     Outbox(Context context) { this(context, "socorro-outbox.db"); }
-    Outbox(Context context, String name) { super(context, name, null, 2); this.context = context.getApplicationContext(); }
+    Outbox(Context context, String name) { super(context, name, null, 3); this.context = context.getApplicationContext(); }
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE pending (id INTEGER PRIMARY KEY AUTOINCREMENT, type INTEGER NOT NULL, body TEXT NOT NULL, event_id INTEGER DEFAULT 0)");
         createHistory(db);
     }
     private void createHistory(SQLiteDatabase db) {
-        db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, trip INTEGER, title TEXT, detail TEXT, kind INTEGER, state TEXT, remote_id TEXT)");
+        db.execSQL("CREATE TABLE events (id INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, trip INTEGER, title TEXT, detail TEXT, kind INTEGER, state TEXT, remote_id TEXT, payload TEXT)");
         db.execSQL("CREATE TABLE trips (id INTEGER PRIMARY KEY AUTOINCREMENT, start INTEGER, finish INTEGER DEFAULT 0, last_at INTEGER, distance REAL DEFAULT 0)");
         db.execSQL("CREATE TABLE points (id INTEGER PRIMARY KEY AUTOINCREMENT, trip INTEGER, at INTEGER, lat REAL, lon REAL, accuracy REAL)");
         db.execSQL("CREATE INDEX points_trip ON points(trip,id)");
@@ -41,6 +41,10 @@ final class Outbox extends SQLiteOpenHelper {
             if (!previous.isEmpty()) db.execSQL("INSERT INTO events(at,trip,title,detail,kind,state) VALUES(?,0,?,?,0,'Local')",
                     new Object[]{System.currentTimeMillis(), "Histórico da versão anterior", previous});
         }
+        if (oldVersion >= 2 && oldVersion < 3) {
+            db.execSQL("ALTER TABLE events ADD COLUMN payload TEXT");
+        }
+        if (oldVersion < 3) db.execSQL("UPDATE events SET payload=(SELECT body FROM pending WHERE pending.event_id=events.id LIMIT 1)");
     }
     long event(long trip, int kind, String title, String detail, String state) {
         ContentValues v = new ContentValues(); v.put("at", System.currentTimeMillis()); v.put("trip", trip);
@@ -51,6 +55,7 @@ final class Outbox extends SQLiteOpenHelper {
         SQLiteDatabase db = getWritableDatabase(); db.beginTransaction();
         try {
             long event = event(trip, type, title, detail, "Pendente");
+            ContentValues snapshot = new ContentValues(); snapshot.put("payload", body); db.update("events", snapshot, "id=?", new String[]{"" + event});
             ContentValues v = new ContentValues(); v.put("type", type); v.put("body", body); v.put("event_id", event);
             db.insertOrThrow("pending", null, v); db.setTransactionSuccessful(); return event;
         } finally { db.endTransaction(); }
@@ -110,7 +115,7 @@ final class Outbox extends SQLiteOpenHelper {
     }
     List<Event> events(boolean alerts) {
         List<Event> rows = new ArrayList<>();
-        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,at,trip,title,detail,kind,state,remote_id FROM events " + (alerts ? "WHERE kind=2 " : "") + "ORDER BY id DESC LIMIT 120", null)) {
+        try (Cursor c = getReadableDatabase().rawQuery("SELECT id,at,trip,title,detail,kind,state,remote_id,payload FROM events " + (alerts ? "WHERE kind=2 " : "") + "ORDER BY id DESC LIMIT 120", null)) {
             while (c.moveToNext()) rows.add(new Event(c));
         }
         return rows;
@@ -142,8 +147,8 @@ final class Outbox extends SQLiteOpenHelper {
         Entry(long id, int type, String body, long event) { this.id = id; this.type = type; this.body = body; this.event = event; }
     }
     static final class Event {
-        final long id, at, trip; final String title, detail, state, remoteId; final int kind;
-        Event(Cursor c) { id=c.getLong(0); at=c.getLong(1); trip=c.getLong(2); title=c.getString(3); detail=c.getString(4); kind=c.getInt(5); state=c.getString(6); remoteId=c.getString(7); }
+        final long id, at, trip; final String title, detail, state, remoteId, payload; final int kind;
+        Event(Cursor c) { id=c.getLong(0); at=c.getLong(1); trip=c.getLong(2); title=c.getString(3); detail=c.getString(4); kind=c.getInt(5); state=c.getString(6); remoteId=c.getString(7); payload=c.getString(8); }
     }
     static final class Trip {
         final long id, start, finish, last; final double distance; final int points, sent, total;

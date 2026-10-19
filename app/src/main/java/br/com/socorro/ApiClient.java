@@ -12,6 +12,31 @@ final class ApiClient {
     static volatile Transport transport = ApiClient::http;
     static JSONObject post(String body) throws Exception { return transport.request("POST", ENDPOINT, body); }
     static JSONObject get(String url) throws Exception { return transport.request("GET", url, null); }
+    static JSONObject parseResponse(int status, String text) throws IOException {
+        if (status != 200) throw new IOException(status == 405 ? "Servidor recusou o envio POST (HTTP 405). O responsável pela API precisa verificar o endereço." : "Servidor respondeu HTTP " + status + ". Registro não confirmado.");
+        try { return new JSONObject(text.replaceFirst("^\\uFEFF", "")); }
+        catch (org.json.JSONException error) {
+            String lower = text.toLowerCase(java.util.Locale.ROOT);
+            throw new IOException(lower.contains("captcha") || lower.contains("verificação de segurança") || lower.contains("security check") ? "Servidor exige uma verificação de segurança e não retornou a resposta da API." : "Servidor retornou uma página em vez da resposta JSON da API.");
+        }
+    }
+    static void validateConfirmation(JSONObject response, JSONObject request) throws Exception {
+        if (!"sucesso".equals(response.optString("status")) || response.optLong("id", 0) <= 0)
+            throw new IOException("Servidor não confirmou a gravação com status de sucesso e número do registro.");
+        if (response.has("usuario") && !request.optString("usuario").equals(response.optString("usuario")))
+            throw new IOException("O nome confirmado pelo servidor é diferente do nome enviado.");
+        if (response.has("tipo_registro") && request.optInt("tipo_registro") != response.optInt("tipo_registro"))
+            throw new IOException("O tipo de registro confirmado pelo servidor é diferente do envio.");
+    }
+    static String errorMessage(Exception error) {
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            if (cause instanceof javax.net.ssl.SSLException) return "Não foi possível conectar por HTTPS. Falha de segurança na conexão com o servidor; nenhum envio foi confirmado.";
+            if (cause instanceof java.net.UnknownHostException) return "Endereço da API não encontrado. Confira a conexão com a internet.";
+            if (cause instanceof java.net.SocketTimeoutException) return "O servidor não respondeu no tempo esperado. Registro salvo para tentar novamente.";
+            if (cause instanceof java.net.ConnectException) return "Não foi possível conectar ao servidor. Registro salvo para tentar novamente.";
+        }
+        return error instanceof IOException && error.getMessage() != null ? error.getMessage() : "Não foi possível concluir o envio. O registro continua salvo no aparelho.";
+    }
     private static JSONObject http(String method, String url, String body) throws Exception {
         HttpURLConnection c = (HttpURLConnection)new URL(url).openConnection();
         try {
@@ -21,11 +46,13 @@ final class ApiClient {
                 c.setDoOutput(true); c.setRequestProperty("Content-Type", "application/json; charset=UTF-8");
                 try (OutputStream out = c.getOutputStream()) { out.write(body.getBytes(StandardCharsets.UTF_8)); }
             }
-            if (c.getResponseCode() != 200) throw new IOException("HTTP " + c.getResponseCode());
-            try (InputStream in = c.getInputStream(); ByteArrayOutputStream out = new ByteArrayOutputStream()) {
+            int status = c.getResponseCode();
+            InputStream stream = status >= 400 ? c.getErrorStream() : c.getInputStream();
+            if (stream == null) throw new IOException("Servidor respondeu HTTP " + status + " sem conteúdo.");
+            try (InputStream in = stream; ByteArrayOutputStream out = new ByteArrayOutputStream()) {
                 byte[] buffer = new byte[4096]; int n;
                 while ((n = in.read(buffer)) != -1) { out.write(buffer, 0, n); if (out.size() > 524288) throw new IOException("Resposta muito grande"); }
-                return new JSONObject(out.toString("UTF-8"));
+                return parseResponse(status, out.toString("UTF-8"));
             }
         } finally { c.disconnect(); }
     }
