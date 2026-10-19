@@ -1,0 +1,19 @@
+<resources xmlns:tools="http://schemas.android.com/tools">
+    
+    <style name="Base.Theme.TrabalhoSensores" parent="android:style/Theme.Material.Light.NoActionBar">
+        
+        
+    </style>
+
+    <style name="Theme.TrabalhoSensores" parent="Base.Theme.TrabalhoSensores" />
+    <style name="Theme.Socorro" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:colorAccent">#28594D</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#F5F4EF</item>
+        <item name="android:navigationBarColor">#F5F4EF</item>
+        <item name="android:statusBarColor">#F5F4EF</item>
+    </style>
+</resources>
