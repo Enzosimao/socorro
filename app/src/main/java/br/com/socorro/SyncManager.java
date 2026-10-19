@@ -27,7 +27,7 @@ final class SyncManager {
                         String remoteId = response.optString("id");
                         db.confirmed(entry, remoteId);
                         prefs.edit().putLong("lastSync", System.currentTimeMillis()).putString("lastSyncUser", request.optString("usuario"))
-                                .putString("lastSyncId", remoteId).putString("syncError", "").putString("syncStatus", "Registro #" + remoteId + " confirmado pelo servidor").apply();
+                                .putString("lastSyncId", remoteId).putString("syncError", "").putString("syncWarning", ApiClient.confirmationWarning(response, request)).putString("syncStatus", remoteId.isEmpty()?"Recebimento confirmado pela API":"Registro #" + remoteId + " confirmado pelo servidor").apply();
                     } catch (Exception error) {
                         db.failed(entry);
                         prefs.edit().putString("syncError", ApiClient.errorMessage(error)).putString("syncStatus", "Envio pendente. Dados preservados no celular.").apply();

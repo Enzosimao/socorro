@@ -21,12 +21,15 @@ final class ApiClient {
         }
     }
     static void validateConfirmation(JSONObject response, JSONObject request) throws Exception {
-        if (!"sucesso".equals(response.optString("status")) || response.optLong("id", 0) <= 0)
-            throw new IOException("Servidor não confirmou a gravação com status de sucesso e número do registro.");
+        if (!"sucesso".equals(response.optString("status")))
+            throw new IOException("Servidor não confirmou a gravação.");
+    }
+    static String confirmationWarning(JSONObject response, JSONObject request) {
         if (response.has("usuario") && !request.optString("usuario").equals(response.optString("usuario")))
-            throw new IOException("O nome confirmado pelo servidor é diferente do nome enviado.");
+            return "A API informou sucesso, mas retornou um nome diferente. Confira o registro no painel.";
         if (response.has("tipo_registro") && request.optInt("tipo_registro") != response.optInt("tipo_registro"))
-            throw new IOException("O tipo de registro confirmado pelo servidor é diferente do envio.");
+            return "A API informou sucesso, mas retornou outro tipo de registro. Confira o painel.";
+        return "";
     }
     static String errorMessage(Exception error) {
         for (Throwable cause = error; cause != null; cause = cause.getCause()) {

@@ -143,8 +143,8 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
         int pending=db.pendingCount();long synced=prefs.getLong("lastSync",0);String id=prefs.getString("lastSyncId","");
         String previous=synced>0?"Última confirmação: "+(id.isEmpty()?"registro": "#"+id)+" · "+prefs.getString("lastSyncUser","nome não registrado")+" · "+date(synced,"dd/MM HH:mm"):"Ainda sem confirmação de recebimento";
         set("apiState",SyncManager.busy?"Enviando dados…":pending>0?pending+" registro(s) aguardando envio\n"+previous:previous);
-        String error=prefs.getString("syncError","");set("apiError",error.isEmpty()?"Salvar o nome no celular não confirma o envio ao servidor.":error);
-        TextView errorView=labels.get("apiError");if(errorView!=null)errorView.setTextColor(error.isEmpty()?muted:danger);
+        String error=prefs.getString("syncError","");String warning=prefs.getString("syncWarning","");set("apiError",!error.isEmpty()?error:!warning.isEmpty()?warning:"Salvar o nome no celular não confirma o envio ao servidor.");
+        TextView errorView=labels.get("apiError");if(errorView!=null)errorView.setTextColor(error.isEmpty()&&warning.isEmpty()?muted:danger);
         if(apiSendButton!=null){apiSendButton.setEnabled(!SyncManager.busy);apiSendButton.setText(SyncManager.busy?"Enviando…":pending>0?"Enviar e tentar pendências":"Enviar agora");}
     }
     private void sendNow(){
@@ -359,7 +359,8 @@ public class MainActivity extends Activity implements SensorEventListener, Locat
             set("sensor3",readings.available[3]?finite(readings.light,"%.0f lx"):"Não disponível");set("sensorDetail3",themeDescription());
             set("sensor4",!readings.available[4]?"Sem barômetro neste aparelho":Float.isFinite(readings.pressure)?finite(readings.pressure,"%.1f hPa"):readings.pressureListening?"Aguardando pressão":"Leitura não iniciada");
             set("sensorDetail4",!readings.available[4]?"Sensor opcional. O Android não disponibilizou um barômetro. A detecção continua com acelerômetro e giroscópio.":Float.isFinite(readings.pressure)?String.format(Locale.getDefault(),"%s · variação relativa: %.1f m",readings.pressureSensorName,-readings.altitudeDrop):readings.pressureListening?readings.pressureSensorName+" · aguardando a primeira leitura em hPa":readings.pressureSensorName+" · não foi possível ativar a leitura. Reabra o aplicativo.");
-            set("sensor5",readings.available[5]?finite(readings.temperature,"%.1f °C"):"Não disponível");
+            set("sensor5",!readings.available[5]?"Sem sensor neste aparelho":!readings.listening[5]?"Leitura não iniciada":Float.isFinite(readings.temperature)?finite(readings.temperature,"%.1f °C"):"Aguardando leitura");
+            set("sensorDetail5",!readings.available[5]?"Este aparelho não oferece um termômetro de ambiente. A temperatura do clima, no Início, vem da previsão online.":"Temperatura medida pelo sensor físico em °C.");
             if(signal!=null&&now-lastGraph>=150){signal.add(readings.g,dark);lastGraph=now;}
         }
         if(now-lastSlow>=2000){lastSlow=now;

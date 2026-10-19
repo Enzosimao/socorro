@@ -71,8 +71,7 @@ public class MonitorService extends Service implements SensorEventListener, Loca
         setStatus(readings.listening[0] ? "Monitoramento ativo, inclusive com tela apagada" : "Acelerômetro sem leitura ativa. SOS manual disponível.");
         handler.post(clock);
         handler.postDelayed(telemetry, 60000);
-        if (!firstLocationSent) send(1, 0);
-        else flush();
+        flush();
     }
     @Override public int onStartCommand(Intent intent, int flags, int id) {
         if (!running || intent == null) return START_NOT_STICKY;

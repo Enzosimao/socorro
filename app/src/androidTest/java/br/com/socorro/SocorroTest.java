@@ -180,12 +180,12 @@ public class SocorroTest {
         catch(InvocationTargetException error){Throwable cause=error.getCause();android.util.Log.i("SocorroApiLive","SEM_CONFIRMACAO: "+ApiClient.errorMessage(cause instanceof Exception?(Exception)cause:error));}
         catch(Exception error){android.util.Log.i("SocorroApiLive","SEM_CONFIRMACAO: "+ApiClient.errorMessage(error));}
     }
-    @Test public void apiRejectsHtmlErrorsAndIncompleteAcknowledgements() throws Exception {
+    @Test public void apiRejectsHtmlAndPreservesOriginalSuccessCompatibility() throws Exception {
         JSONObject request=new JSONObject("{\"usuario\":\"Enzo teste\",\"tipo_registro\":1}");
         try{ApiClient.parseResponse(405,"<html>405 Not Allowed</html>");fail("HTTP 405 não pode confirmar envio");}catch(IOException error){assertTrue(error.getMessage().contains("405"));}
         try{ApiClient.parseResponse(200,"<html>captcha</html>");fail("Captcha não é resposta da API");}catch(IOException error){assertTrue(error.getMessage().contains("segurança"));}
-        try{ApiClient.validateConfirmation(new JSONObject("{\"status\":\"sucesso\"}"),request);fail("ID ausente não confirma envio");}catch(IOException expected){}
-        try{ApiClient.validateConfirmation(new JSONObject("{\"status\":\"sucesso\",\"id\":12,\"usuario\":\"Outro nome\"}"),request);fail("Nome diferente não confirma envio");}catch(IOException expected){}
+        ApiClient.validateConfirmation(new JSONObject("{\"status\":\"sucesso\"}"),request);
+        JSONObject normalized=new JSONObject("{\"status\":\"sucesso\",\"id\":12,\"usuario\":\"Outro nome\"}");ApiClient.validateConfirmation(normalized,request);assertFalse(ApiClient.confirmationWarning(normalized,request).isEmpty());
         ApiClient.validateConfirmation(ApiClient.parseResponse(200,"{\"status\":\"sucesso\",\"id\":12,\"usuario\":\"Enzo teste\",\"tipo_registro\":1}"),request);
         assertTrue(ApiClient.errorMessage(new javax.net.ssl.SSLHandshakeException("handshake")).contains("HTTPS"));
     }
@@ -222,6 +222,13 @@ public class SocorroTest {
             ApiClient.transport=(method,url,body)->new JSONObject("{\"status\":\"sucesso\",\"id\":702}");SyncManager.flush(context,null);
             waitFor(()->{try(Outbox db=new Outbox(context)){return db.pendingCount()==0&&!SyncManager.busy;}},8000);assertEquals("",context.getSharedPreferences("socorro",0).getString("syncError","erro"));
         }finally{main(activity::finish);}
+    }
+    @Test public void successWithoutIdDoesNotRemainPendingOrGetResent() throws Exception {
+        waitFor(()->!SyncManager.busy,5000);try(Outbox db=new Outbox(context)){db.getWritableDatabase().delete("pending",null,null);db.add(1,"{\"usuario\":\"Nome original\",\"tipo_registro\":1}",0,"Registro","Teste");}
+        AtomicInteger calls=new AtomicInteger();ApiClient.transport=(method,url,body)->{calls.incrementAndGet();return new JSONObject("{\"status\":\"sucesso\"}");};
+        SyncManager.flush(context,null);waitFor(()->!SyncManager.busy,8000);
+        try(Outbox db=new Outbox(context)){assertEquals(0,db.pendingCount());assertEquals("Confirmado",db.events(false).get(0).state);assertEquals("Nome original",new JSONObject(db.events(false).get(0).payload).getString("usuario"));}
+        SyncManager.flush(context,null);waitFor(()->!SyncManager.busy,8000);assertEquals(1,calls.get());
     }
     @Test public void upgradeV2PreservesPayloadAfterAcknowledgement() throws Exception {
         String file="payload-migration-test.db";context.deleteDatabase(file);
